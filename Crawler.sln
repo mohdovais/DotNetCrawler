@@ -1,0 +1,34 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.0.31903.59
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Crawler", "Crawler\Crawler.csproj", "{954CA3B9-2CB1-4663-9170-4F04B9214911}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Crawler.Tests", "Crawler.Tests\Crawler.Tests.csproj", "{E1CA71A6-FB2F-4841-A196-C907757A5DA2}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Crawler.Benchmark", "Crawler.Benchmark\Crawler.Benchmark.csproj", "{002F5EAE-030F-4343-ACDB-1100438002E8}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{954CA3B9-2CB1-4663-9170-4F04B9214911}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{954CA3B9-2CB1-4663-9170-4F04B9214911}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{954CA3B9-2CB1-4663-9170-4F04B9214911}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{954CA3B9-2CB1-4663-9170-4F04B9214911}.Release|Any CPU.Build.0 = Release|Any CPU
+		{E1CA71A6-FB2F-4841-A196-C907757A5DA2}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{E1CA71A6-FB2F-4841-A196-C907757A5DA2}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{E1CA71A6-FB2F-4841-A196-C907757A5DA2}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{E1CA71A6-FB2F-4841-A196-C907757A5DA2}.Release|Any CPU.Build.0 = Release|Any CPU
+		{002F5EAE-030F-4343-ACDB-1100438002E8}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{002F5EAE-030F-4343-ACDB-1100438002E8}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{002F5EAE-030F-4343-ACDB-1100438002E8}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{002F5EAE-030F-4343-ACDB-1100438002E8}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+EndGlobal

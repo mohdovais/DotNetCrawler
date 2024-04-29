@@ -1,0 +1,904 @@
+using System.Text;
+using System.Text.RegularExpressions;
+
+namespace Crawler;
+
+// https://github.com/jsdom/whatwg-url/blob/main/lib/url-state-machine.js
+
+public class Url
+{
+    public string Scheme { get; set; } = string.Empty;
+    public string Username { get; set; } = string.Empty;
+    public string Password { get; set; } = string.Empty;
+    public string? Host { get; set; }
+    public string? Port { get; set; }
+    public string Path { get; set; } = string.Empty;
+    public string? Query { get; set; }
+    public string? Fragment { get; set; }
+}
+
+public class URLStateMachine
+{
+    private enum MachineState
+    {
+        AUTHORITY,
+        FILE,
+        FILE_SLASH,
+        FILE_HOST,
+        FRAGMENT,
+        HOST,
+        NO_SCHEME,
+        OPAQUE_PATH,
+        PATH,
+        PATH_OR_AUTHORITY,
+        PATH_START,
+        PORT,
+        QUERY,
+        RELATIVE,
+        RELATIVE_SLASH,
+        SCHEME,
+        SCHEME_START,
+        SPECIAL_RELATIVE_OR_AUTHORITY,
+        SPECIAL_AUTHORITY_SLASHES,
+        SPECIAL_AUTHORITY_IGNORE_SLASHES
+    }
+
+    private readonly Url _url;
+    private Encoding _encodingOverride = Encoding.UTF8;
+    private int _pointer = 0;
+    private MachineState _state = MachineState.SCHEME_START;
+    private string _buffer = string.Empty;
+    private bool _atFlag = false;
+    private bool _arrFlag = false;
+    private bool _passwordTokenSeenFlag = false;
+    private string? _stateOverride;
+    private string _input = string.Empty;
+    private string? _base;
+
+    private static readonly Regex _controlCharsRegex = new Regex("^[\u0000-\u001F\u0020]+|[\u0000-\u001F\u0020]+$");
+    private static readonly Regex _tabAndNewlineRegex = new Regex("\u0009|\u000A|\u000D");
+
+    public bool Failure { get; private set; }
+    public bool ParseError { get; private set; }
+
+    public URLStateMachine(string input, string? base_)
+    {
+        _input = input;
+        _base = base_;
+        _url = new Url();
+
+        var res1 = TrimControlChars(_input);
+        if (res1 != _input)
+        {
+            ParseError = true;
+        }
+        _input = res1;
+
+        var res2 = TrimTabAndNewline(_input);
+        if (res2 != _input)
+        {
+            ParseError = true;
+        }
+        _input = res2;
+
+        //Input = Array.from(_input, c => c.codePointAt(0));
+
+        for (; _pointer <= _input.Count(); _pointer++)
+        {
+            var c = _input[_pointer];
+
+            // exec state machine
+            //var ret = this[`parse ${ _state}`](char c);
+            var ret = _state switch
+            {
+                MachineState.AUTHORITY => ParseAuthority(c),
+                MachineState.FILE => ParseFile(c),
+                MachineState.FILE_SLASH => ParseFileSlash(c),
+                MachineState.FILE_HOST => ParseFileHost(c),
+                MachineState.FRAGMENT => ParseFragment(c),
+                MachineState.HOST => ParseHost(c),
+                MachineState.NO_SCHEME => ParseNoScheme(c),
+                MachineState.OPAQUE_PATH => ParseOpaquePath(c),
+                MachineState.PATH => ParsePath(c),
+                MachineState.PATH_OR_AUTHORITY => ParsePathOrAuthority(c),
+                MachineState.PATH_START => ParsePathStart(c),
+                MachineState.PORT => ParsePort(c),
+                MachineState.QUERY => ParseQuery(c),
+                MachineState.RELATIVE => ParseRelative(c),
+                MachineState.RELATIVE_SLASH => ParseRelativeSlash(c),
+                MachineState.SCHEME => ParseScheme(c),
+                MachineState.SCHEME_START => ParseSchemeStart(c),
+                MachineState.SPECIAL_RELATIVE_OR_AUTHORITY => ParseSpecialRelativeOrAuthority(c),
+                MachineState.SPECIAL_AUTHORITY_SLASHES => ParseSpecialAuthoritySlashes(c),
+                MachineState.SPECIAL_AUTHORITY_IGNORE_SLASHES => ParseSpecialAuthorityIgnoreSlashes(c),
+                _ => throw new ArgumentException("Invalid state", nameof(_state))
+            };
+
+            if (ret != true)
+            {
+                break; // terminate algorithm
+            }
+            else if (ret == null)
+            {
+                Failure = true;
+                break;
+            }
+        }
+    }
+
+    private bool? ParseSchemeStart(char c)
+    {
+        if (IsASCIIAlpha(c))
+        {
+            _buffer += Char.ToLower(c);
+            _state = MachineState.SCHEME;
+        }
+        else if (_stateOverride == null)
+        {
+            _state = MachineState.NO_SCHEME;
+            --_pointer;
+        }
+        else
+        {
+            ParseError = true;
+            return null;
+        }
+
+        return true;
+    }
+
+    private bool? ParseScheme(char c)
+    {
+
+        if (IsASCIIAlphanumeric(c) || c == '+' || c == '-' || c == '.')
+        {
+            _buffer += Char.ToLower(c);
+        }
+        else if (c == ':')
+        {
+            if (_stateOverride == null)
+            {
+                if (isSpecial(_url) && !isSpecialScheme(_buffer))
+                {
+                    return false;
+                }
+
+                if (!isSpecial(_url) && isSpecialScheme(_buffer))
+                {
+                    return false;
+                }
+
+                if ((includesCredentials(_url) || _url.Port != null) && _buffer == "file")
+                {
+                    return false;
+                }
+
+                if (_url.Scheme == "file" && string.IsNullOrEmpty(_url.Host))
+                {
+                    return false;
+                }
+            }
+            _url.Scheme = _buffer;
+            if (_stateOverride != null)
+            {
+                if (_url.Port == defaultPort(_url.Scheme))
+                {
+                    _url.Port = null;
+                }
+                return false;
+            }
+            _buffer = string.Empty;
+            if (_url.Scheme == "file")
+            {
+                if (_input[_pointer + 1] != '/' || _input[_pointer + 2] != '/')
+                {
+                    ParseError = true;
+                }
+                _state = MachineState.FILE;
+            }
+            else if (isSpecial(_url) && _base != null && _base.Scheme == _url.Scheme)
+            {
+                _state = MachineState.SPECIAL_RELATIVE_OR_AUTHORITY;
+            }
+            else if (isSpecial(_url))
+            {
+                _state = MachineState.SPECIAL_AUTHORITY_SLASHES;
+            }
+            else if (_input[_pointer + 1] == '/')
+            {
+                _state = MachineState.PATH_OR_AUTHORITY;
+                ++_pointer;
+            }
+            else
+            {
+                _url.Path = string.Empty;
+                _state = MachineState.OPAQUE_PATH;
+            }
+        }
+        else if (_stateOverride == null)
+        {
+            _buffer = string.Empty;
+            _state = MachineState.NO_SCHEME;
+            _pointer = -1;
+        }
+        else
+        {
+            ParseError = true;
+            return null;
+        }
+
+        return true;
+
+    }
+
+    private bool? ParseSpecialRelativeOrAuthority(char c)
+    {
+        if (c == '/' && _input[_pointer + 1] == '/')
+        {
+            _state = MachineState.SPECIAL_AUTHORITY_IGNORE_SLASHES;
+            ++_pointer;
+        }
+        else
+        {
+            ParseError = true;
+            _state = MachineState.RELATIVE;
+            --_pointer;
+        }
+
+        return true;
+    }
+
+    private bool? ParsePathOrAuthority(char c)
+    {
+        if (c == '/')
+        {
+            _state = MachineState.AUTHORITY;
+        }
+        else
+        {
+            _state = MachineState.PATH;
+            --_pointer;
+        }
+
+        return true;
+    }
+
+    private bool? ParseRelative(char c)
+    {
+        _url.Scheme = _base.scheme;
+        if (c == '/')
+        {
+            _state = MachineState.RELATIVE_SLASH;
+        }
+        else if (isSpecial(_url) && c == '\\')
+        {
+            ParseError = true;
+            _state = MachineState.RELATIVE_SLASH;
+        }
+        else
+        {
+            _url.Username = _base.username;
+            _url.Password = _base.password;
+            _url.Host = _base.host;
+            _url.Port = _base.port;
+            _url.Path = _base.path.slice();
+            _url.Query = _base.query;
+            if (c == '?')
+            {
+                _url.Query = string.Empty;
+                _state = MachineState.QUERY;
+            }
+            else if (c == '#')
+            {
+                _url.Fragment = string.Empty;
+                _state = MachineState.FRAGMENT;
+            }
+            else if (!isNaN(char c))
+            {
+                _url.Query = null;
+                _url.Path.pop();
+                _state = MachineState.PATH;
+                --_pointer;
+            }
+        }
+
+        return true;
+    }
+
+    private bool? ParseRelativeSlash(char c)
+    {
+        if (isSpecial(_url) && (c == '/' || c == '\\'))
+        {
+            if (c == '\\')
+            {
+                ParseError = true;
+            }
+            _state = MachineState.SPECIAL_AUTHORITY_IGNORE_SLASHES;
+        }
+        else if (c == '/')
+        {
+            _state = MachineState.AUTHORITY;
+        }
+        else
+        {
+            _url.Username = _base.username;
+            _url.Password = _base.password;
+            _url.Host = _base.host;
+            _url.Port = _base.port;
+            _state = MachineState.PATH;
+            --_pointer;
+        }
+
+        return true;
+    }
+
+    private bool? ParseSpecialAuthoritySlashes(char c)
+    {
+        if (c == '/' && _input[_pointer + 1] == '/')
+        {
+            _state = MachineState.SPECIAL_AUTHORITY_IGNORE_SLASHES;
+            ++_pointer;
+        }
+        else
+        {
+            ParseError = true;
+            _state = MachineState.SPECIAL_AUTHORITY_IGNORE_SLASHES;
+            --_pointer;
+        }
+
+        return true;
+    }
+
+    private bool? ParseSpecialAuthorityIgnoreSlashes(char c)
+    {
+        if (c != '/' && c != '\\')
+        {
+            _state = MachineState.AUTHORITY;
+            --_pointer;
+        }
+        else
+        {
+            ParseError = true;
+        }
+
+        return true;
+    }
+
+    private bool? ParseAuthority(char c)
+    {
+        if (c == '@')
+        {
+            ParseError = true;
+            if (_atFlag)
+            {
+                _buffer = $"%40${_buffer}";
+            }
+            _atFlag = true;
+
+            // careful, this is based on buffer and has its own pointer (_pointer != pointer) and inner chars
+            var len = countSymbols(_buffer);
+            for (var pointer = 0; pointer < len; ++pointer)
+            {
+                var codePoint = _buffer.codePointAt(pointer);
+
+                if (codePoint == ':' && !_passwordTokenSeenFlag)
+                {
+                    _passwordTokenSeenFlag = true;
+                    continue;
+                }
+                var encodedCodePoints = utf8PercentEncodeCodePoint(codePoint, isUserinfoPercentEncode);
+                if (_passwordTokenSeenFlag)
+                {
+                    _url.Password += encodedCodePoints;
+                }
+                else
+                {
+                    _url.Username += encodedCodePoints;
+                }
+            }
+            _buffer = string.Empty;
+        }
+        else if (c == '/' || c == '?' || c == '#' || (isSpecial(_url) && c == '\\'))
+        {
+            if (_atFlag && string.IsNullOrEmpty(_buffer))
+            {
+                ParseError = true;
+                return null;
+            }
+            _pointer -= countSymbols(_buffer) + 1;
+            _buffer = string.Empty;
+            _state = MachineState.HOST;
+        }
+        else
+        {
+            _buffer += c.ToString();
+        }
+
+        return true;
+    }
+
+    private bool? ParseHost(char c)
+    {
+        return ParseHostName(c);
+    }
+
+    private bool? ParseHostName(char c)
+    {
+        if (_stateOverride != null && _url.Scheme == "file")
+        {
+            --_pointer;
+            _state = MachineState.FILE_HOST;
+        }
+        else if (c == ':' && !_arrFlag)
+        {
+            if (string.IsNullOrEmpty(_buffer))
+            {
+                ParseError = true;
+                return null;
+            }
+
+            if (_stateOverride == "hostname")
+            {
+                return false;
+            }
+
+            var host = parseHost(_buffer, isNotSpecial(_url));
+            if (host == failure)
+            {
+                return null;
+            }
+
+            _url.Host = host;
+            _buffer = string.Empty;
+            _state = MachineState.PORT;
+        }
+        else if (c == '/' || c == '?' || c == '#' || (isSpecial(_url) && c == '\\'))
+        {
+
+            --_pointer;
+            if (isSpecial(_url) && string.IsNullOrEmpty(_buffer))
+            {
+                ParseError = true;
+                return null;
+            }
+            else if (_stateOverride != null && string.IsNullOrEmpty(_buffer) && (includesCredentials(_url) || _url.Port != null))
+            {
+                ParseError = true;
+                return false;
+            }
+
+            var host = parseHost(_buffer, isNotSpecial(_url));
+            if (host == failure)
+            {
+                return null;
+            }
+
+            _url.Host = host;
+            _buffer = string.Empty;
+            _state = MachineState.PATH_START;
+            if (_stateOverride != null)
+            {
+                return false;
+            }
+        }
+        else
+        {
+            if (c == '[')
+            {
+                _arrFlag = true;
+            }
+            else if (c == ']')
+            {
+                _arrFlag = false;
+            }
+            _buffer += c.ToString();
+        }
+
+        return true;
+    }
+
+    private bool? ParsePort(char c)
+    {
+        if (IsASCIIDigit(c))
+        {
+            _buffer += c.ToString();
+        }
+        else if (c == '/' || c == '?' || c == '#' || (isSpecial(_url) && c == '\\') || _stateOverride)
+        {
+            if (_buffer != string.Empty)
+            {
+                var port = int.Parse(_buffer);
+                if (port > 2 * *16 - 1)
+                {
+                    ParseError = true;
+                    return null;
+                }
+                _url.Port = port == defaultPort(_url.Scheme) ? null : port;
+                _buffer = string.Empty;
+            }
+            if (_stateOverride != null)
+            {
+                return false;
+            }
+            _state = MachineState.PATH_START;
+            --_pointer;
+        }
+        else
+        {
+            ParseError = true;
+            return null;
+        }
+
+        return true;
+    }
+
+    private bool? ParseFile(char c)
+    {
+        _url.Scheme = "file";
+        _url.Host = string.Empty;
+
+        if (c == '/' || c == '\\')
+        {
+            if (c == '\\')
+            {
+                ParseError = true;
+            }
+            _state = MachineState.FILE_SLASH;
+        }
+        else if (_base != null && _base.scheme == "file")
+        {
+            _url.Host = _base.host;
+            _url.Path = _base.path.slice();
+            _url.Query = _base.query;
+            if (c == '?')
+            {
+                _url.Query = string.Empty;
+                _state = MachineState.QUERY;
+            }
+            else if (c == '#')
+            {
+                _url.Fragment = string.Empty;
+                _state = MachineState.FRAGMENT;
+            }
+            else
+            {
+                _url.Query = null;
+                if (!startsWithWindowsDriveLetter(_input, _pointer))
+                {
+                    shortenPath(_url);
+                }
+                else
+                {
+                    ParseError = true;
+                    _url.Path = [];
+                }
+
+                _state = MachineState.PATH;
+                --_pointer;
+            }
+        }
+        else
+        {
+            _state = MachineState.PATH;
+            --_pointer;
+        }
+
+        return true;
+    }
+
+    private bool? ParseFileSlash(char c)
+    {
+        if (c == '/' || c == '\\')
+        {
+            if (c == '\\')
+            {
+                ParseError = true;
+            }
+            _state = MachineState.FILE_HOST;
+        }
+        else
+        {
+            if (_base != null && _base.scheme == "file")
+            {
+                if (!startsWithWindowsDriveLetter(_input, _pointer) &&
+                    isNormalizedWindowsDriveLetterString(_base.path[0]))
+                {
+                    _url.Path.push(_base.path[0]);
+                }
+                _url.Host = _base.host;
+            }
+            _state = MachineState.PATH;
+            --_pointer;
+        }
+
+        return true;
+    }
+
+    private bool? ParseFileHost(char c)
+    {
+        if (c == '/' || c == '\\' || c == '?' || c == '#')
+        {
+            --_pointer;
+            if (_stateOverride == null && isWindowsDriveLetterString(_buffer))
+            {
+                ParseError = true;
+                _state = MachineState.PATH;
+            }
+            else if (string.IsNullOrEmpty(_buffer))
+            {
+                _url.Host = string.Empty;
+                if (_stateOverride != null)
+                {
+                    return false;
+                }
+                _state = MachineState.PATH_START;
+            }
+            else
+            {
+                var host = parseHost(_buffer, isNotSpecial(_url));
+                if (host == failure)
+                {
+                    return null;
+                }
+                if (host == "localhost")
+                {
+                    host = string.Empty;
+                }
+                _url.Host = host;
+
+                if (_stateOverride != null)
+                {
+                    return false;
+                }
+
+                _buffer = string.Empty;
+                _state = MachineState.PATH_START;
+            }
+        }
+        else
+        {
+            _buffer += c.ToString();
+        }
+
+        return true;
+    }
+
+    private bool? ParsePathStart(char c)
+    {
+        if (isSpecial(_url))
+        {
+            if (c == '\\')
+            {
+                ParseError = true;
+            }
+            _state = MachineState.PATH;
+
+            if (c != '/' && c != '\\')
+            {
+                --_pointer;
+            }
+        }
+        else if (_stateOverride == null && c == '?')
+        {
+            _url.Query = string.Empty;
+            _state = MachineState.QUERY;
+        }
+        else if (_stateOverride == null && c == '#')
+        {
+            _url.Fragment = string.Empty;
+            _state = MachineState.FRAGMENT;
+        }
+        else if (c != undefined)
+        {
+            _state = MachineState.PATH;
+            if (c != '/')
+            {
+                --_pointer;
+            }
+        }
+        else if (_stateOverride && _url.Host == null)
+        {
+            _url.Path.push(string.Empty);
+        }
+
+        return true;
+    }
+
+    private bool? ParsePath(char c)
+    {
+        if (c == '/' || (isSpecial(_url) && c == '\\') || (_stateOverride == null && (c == '?' || c == '#')))
+        {
+            if (isSpecial(_url) && c == '\\')
+            {
+                ParseError = true;
+            }
+
+            if (isDoubleDot(_buffer))
+            {
+                shortenPath(_url);
+                if (c != '/' && !(isSpecial(_url) && c == '\\'))
+                {
+                    _url.Path.push(string.Empty);
+                }
+            }
+            else if (isSingleDot(_buffer) && c != '/' &&
+                       !(isSpecial(_url) && c == '\\'))
+            {
+                _url.Path.push(string.Empty);
+            }
+            else if (!isSingleDot(_buffer))
+            {
+                if (_url.Scheme == "file" && _url.Path.Count() == 0 && isWindowsDriveLetterString(_buffer))
+                {
+                    _buffer = $"${_buffer[0]}:";
+                }
+                _url.Path.push(_buffer);
+            }
+            _buffer = string.Empty;
+            if (c == '?')
+            {
+                _url.Query = string.Empty;
+                _state = MachineState.QUERY;
+            }
+            if (c == '#')
+            {
+                _url.Fragment = string.Empty;
+                _state = MachineState.FRAGMENT;
+            }
+        }
+        else
+        {
+            // TODO: If c is not a URL code point and not "%", parse error.
+
+            if (c == '%' &&
+              (!IsASCIIHex(_input[_pointer + 1]) || !IsASCIIHex(_input[_pointer + 2])))
+            {
+                ParseError = true;
+            }
+
+            _buffer += utf8PercentEncodeCodePoint(c, isPathPercentEncode);
+        }
+
+        return true;
+    }
+
+    private bool? ParseOpaquePath(char c)
+    {
+        if (c == '?')
+        {
+            _url.Query = string.Empty;
+            _state = MachineState.QUERY;
+        }
+        else if (c == '#')
+        {
+            _url.Fragment = string.Empty;
+            _state = MachineState.FRAGMENT;
+        }
+        else
+        {
+            // TODO: Add: not a URL code point
+            if (c != '%')
+            {
+                ParseError = true;
+            }
+
+            if (c == '%' &&
+                (!IsASCIIHex(_input[_pointer + 1]) || !IsASCIIHex(_input[_pointer + 2])))
+            {
+                ParseError = true;
+            }
+
+            _url.Path += utf8PercentEncodeCodePoint(c, isC0ControlPercentEncode);
+        }
+
+        return true;
+    }
+
+    private bool? ParseQuery(char c)
+    {
+        if (!isSpecial(_url) || _url.Scheme == "ws" || _url.Scheme == "wss")
+        {
+            _encodingOverride = Encoding.UTF8;
+        }
+
+        if (_stateOverride == null && c == '#')
+        {
+            var queryPercentEncodePredicate = isSpecial(_url) ? isSpecialQueryPercentEncode : isQueryPercentEncode;
+            _url.Query += utf8PercentEncodeString(_buffer, queryPercentEncodePredicate);
+
+            _buffer = string.Empty;
+
+            if (c == '#')
+            {
+                _url.Fragment = string.Empty;
+                _state = MachineState.FRAGMENT;
+            }
+        }
+        else
+        {
+            // TODO: If c is not a URL code point and not "%", parse error.
+            if (c == '%' && (!IsASCIIHex(_input[_pointer + 1]) || !IsASCIIHex(_input[_pointer + 2])))
+            {
+                ParseError = true;
+            }
+
+            _buffer += c.ToString();
+        }
+
+        return true;
+    }
+
+    private bool? ParseFragment(char c)
+    {
+        // TODO: If c is not a URL code point and not "%", parse error.
+        if (c == '%' && (!IsASCIIHex(_input[_pointer + 1]) || !IsASCIIHex(_input[_pointer + 2])))
+        {
+            ParseError = true;
+        }
+
+        _url.Fragment += utf8PercentEncodeCodePoint(c, isFragmentPercentEncode);
+
+        return true;
+    }
+
+    private bool? ParseNoScheme(char c)
+    {
+        if (_base == null || (hasAnOpaquePath(_base) && c != '#'))
+        {
+            return null;
+        }
+        else if (hasAnOpaquePath(_base) && c == '#')
+        {
+            _url.Scheme = _base.Scheme;
+            _url.Path = _base.Path;
+            _url.Query = _base.Query;
+            _url.Fragment = string.Empty;
+            _state = MachineState.FRAGMENT;
+        }
+        else if (_base.Scheme == "file")
+        {
+            _state = MachineState.FILE;
+            --_pointer;
+        }
+        else
+        {
+            _state = MachineState.RELATIVE;
+            --_pointer;
+        }
+
+        return true;
+    }
+
+
+
+    //
+    private static string TrimControlChars(string url)
+    {
+        return _controlCharsRegex.Replace(url, string.Empty);
+    }
+
+    private static string TrimTabAndNewline(string url)
+    {
+        return _tabAndNewlineRegex.Replace(url, string.Empty);
+    }
+
+    private static bool IsASCIIDigit(char c)
+    {
+        return c >= 0x30 && c <= 0x39;
+    }
+
+    private static bool IsASCIIAlpha(char c)
+    {
+        return (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A);
+    }
+
+    private static bool IsASCIIAlphanumeric(char c)
+    {
+        return IsASCIIAlpha(c) || IsASCIIDigit(c);
+    }
+
+    private static bool IsASCIIHex(char c)
+    {
+        return IsASCIIDigit(c) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66);
+    }
+}
